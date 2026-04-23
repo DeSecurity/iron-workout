@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useWorkoutStorage } from '@/hooks/useWorkoutStorage';
 import { useTimer } from '@/hooks/useTimer';
+import { useAuth } from '@/contexts/AuthContext';
 import { WorkoutTemplate } from '@/types/workout';
 import { Navigation } from '@/components/Navigation';
 import { ProfileSelector } from '@/components/ProfileSelector';
@@ -11,6 +12,8 @@ import { WorkoutHistory } from '@/components/WorkoutHistory';
 import { ProfileView } from '@/components/ProfileView';
 import { WorkoutStart } from '@/components/WorkoutStart';
 import { RestTimer } from '@/components/RestTimer';
+import { Button } from '@/components/ui/button';
+import { LogOut, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 type Tab = 'workout' | 'templates' | 'exercises' | 'history' | 'profile';
@@ -20,7 +23,9 @@ const Index = () => {
   const [activeWorkout, setActiveWorkout] = useState<WorkoutTemplate | null>(null);
   const [isWorkoutInProgress, setIsWorkoutInProgress] = useState(false);
 
+  const { signOut } = useAuth();
   const {
+    loading,
     profiles,
     activeProfile,
     createProfile,
@@ -67,22 +72,33 @@ const Index = () => {
     cancelTimer();
   };
 
-  if (!activeProfile) return null;
+  if (loading || !activeProfile) {
+    return (
+      <div className="min-h-screen grid place-items-center bg-background">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="sticky top-0 z-20 bg-background/95 backdrop-blur-sm border-b border-border px-4 py-3">
-        <div className="max-w-lg mx-auto flex items-center justify-between">
+        <div className="max-w-lg mx-auto flex items-center justify-between gap-2">
           <h1 className="font-display text-2xl text-primary">IRON</h1>
-          <ProfileSelector
-            profiles={profiles}
-            activeProfile={activeProfile}
-            onSwitch={switchProfile}
-            onCreate={createProfile}
-            onRename={renameProfile}
-            onDelete={deleteProfile}
-          />
+          <div className="flex items-center gap-2">
+            <ProfileSelector
+              profiles={profiles}
+              activeProfile={activeProfile}
+              onSwitch={switchProfile}
+              onCreate={createProfile}
+              onRename={renameProfile}
+              onDelete={deleteProfile}
+            />
+            <Button variant="ghost" size="icon" onClick={signOut} aria-label="Sign out">
+              <LogOut className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       </header>
 
