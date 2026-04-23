@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Iron Workout</title>
+    <script>
+      // SPA fallback for GitHub Pages: rewrite the path into a hash so index.html
+      // can restore it on load (works with React Router BrowserRouter).
+      (function () {
+        var segmentCount = 1; // /Iron-Workout/
+        var l = window.location;
+        l.replace(
+          l.protocol + "//" + l.hostname + (l.port ? ":" + l.port : "") +
+          l.pathname.split("/").slice(0, 1 + segmentCount).join("/") + "/?p=/" +
+          l.pathname.slice(1).split("/").slice(segmentCount).join("/").replace(/&/g, "~and~") +
+          (l.search ? "&q=" + l.search.slice(1).replace(/&/g, "~and~") : "") +
+          l.hash
+        );
+      })();
+    </script>
+  </head>
+  <body></body>
+</html>
