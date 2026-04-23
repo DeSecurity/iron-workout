@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
-import { WorkoutTrackerData, Profile, Exercise, WorkoutTemplate, WorkoutSession } from '@/types/workout';
-import { generateDefaultExercises } from '@/data/defaultExercises';
-import { generateDefaultTemplates } from '@/data/defaultTemplates';
+import { useState, useEffect, useCallback, useRef } from "react";
+import { WorkoutTrackerData, Profile, Exercise, WorkoutTemplate, WorkoutSession } from "@/types/workout";
+import { generateDefaultExercises } from "@/data/defaultExercises";
+import { generateDefaultTemplates } from "@/data/defaultTemplates";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
 
-const STORAGE_KEY = 'workoutTrackerData';
 const CURRENT_VERSION = 1;
 
 function generateId(): string {
@@ -13,10 +14,9 @@ function generateId(): string {
 function createDefaultProfile(): Profile {
   const exercises = generateDefaultExercises();
   const templates = generateDefaultTemplates(exercises);
-  
   return {
     id: generateId(),
-    name: 'Default Profile',
+    name: "Default Profile",
     createdAt: new Date().toISOString(),
     exercises,
     templates,
@@ -24,50 +24,90 @@ function createDefaultProfile(): Profile {
   };
 }
 
-function getInitialData(): WorkoutTrackerData {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      const data = JSON.parse(stored) as WorkoutTrackerData;
-      if (data.profiles && data.profiles.length > 0) {
-        return data;
-      }
-    }
-  } catch (error) {
-    console.error('Error reading from localStorage:', error);
-  }
-
-  const defaultProfile = createDefaultProfile();
-  return {
-    profiles: [defaultProfile],
-    activeProfileId: defaultProfile.id,
-    version: CURRENT_VERSION,
-  };
-}
-
-function saveToStorage(data: WorkoutTrackerData): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  } catch (error) {
-    console.error('Error saving to localStorage:', error);
-  }
+function createDefaultData(): WorkoutTrackerData {
+  const p = createDefaultProfile();
+  return { profiles: [p], activeProfileId: p.id, version: CURRENT_VERSION };
 }
 
 export function useWorkoutStorage() {
-  const [data, setData] = useState<WorkoutTrackerData>(getInitialData);
+  const { user, loading: authLoading } = useAuth();
+  const [data, setData] = useState<WorkoutTrackerData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isInitialLoadRef = useRef(true);
 
-  // Save to localStorage whenever data changes
+  // Load data from cloud when user is available
   useEffect(() => {
-    saveToStorage(data);
-  }, [data]);
+    if (authLoading) return;
+    if (!user) {
+      setData(null);
+      setLoading(false);
+      return;
+    }
 
-  const activeProfile = data.profiles.find(p => p.id === data.activeProfileId) || data.profiles[0];
+    let cancelled = false;
+    isInitialLoadRef.current = true;
+    setLoading(true);
 
-  // Profile operations
+    (async () => {
+      const { data: row, error } = await supabase
+        .from("workout_data")
+        .select("data")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (cancelled) return;
+
+      if (error) {
+        console.error("Failed to load workout data:", error);
+        setData(createDefaultData());
+        setLoading(false);
+        return;
+      }
+
+      const stored = row?.data as unknown as WorkoutTrackerData | null;
+      if (stored && stored.profiles?.length) {
+        setData(stored);
+      } else {
+        const fresh = createDefaultData();
+        setData(fresh);
+        await supabase.from("workout_data").upsert({ user_id: user.id, data: fresh as never });
+      }
+      setLoading(false);
+      // Allow saves on next tick
+      setTimeout(() => {
+        isInitialLoadRef.current = false;
+      }, 0);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user, authLoading]);
+
+  // Debounced save to cloud
+  useEffect(() => {
+    if (!user || !data || isInitialLoadRef.current) return;
+
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(async () => {
+      const { error } = await supabase
+        .from("workout_data")
+        .upsert({ user_id: user.id, data: data as never });
+      if (error) console.error("Failed to save workout data:", error);
+    }, 500);
+
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, [data, user]);
+
+  const activeProfile = data?.profiles.find((p) => p.id === data.activeProfileId) || data?.profiles[0];
+
+  // ---- Profile operations ----
   const createProfile = useCallback((name: string) => {
     const exercises = generateDefaultExercises();
     const templates = generateDefaultTemplates(exercises);
-    
     const newProfile: Profile = {
       id: generateId(),
       name,
@@ -76,232 +116,224 @@ export function useWorkoutStorage() {
       templates,
       sessions: [],
     };
-
-    setData(prev => ({
-      ...prev,
-      profiles: [...prev.profiles, newProfile],
-      activeProfileId: newProfile.id,
-    }));
-
+    setData((prev) =>
+      prev
+        ? { ...prev, profiles: [...prev.profiles, newProfile], activeProfileId: newProfile.id }
+        : prev
+    );
     return newProfile;
   }, []);
 
   const deleteProfile = useCallback((profileId: string) => {
-    setData(prev => {
-      const remainingProfiles = prev.profiles.filter(p => p.id !== profileId);
-      if (remainingProfiles.length === 0) {
-        const defaultProfile = createDefaultProfile();
-        return {
-          ...prev,
-          profiles: [defaultProfile],
-          activeProfileId: defaultProfile.id,
-        };
+    setData((prev) => {
+      if (!prev) return prev;
+      const remaining = prev.profiles.filter((p) => p.id !== profileId);
+      if (remaining.length === 0) {
+        const def = createDefaultProfile();
+        return { ...prev, profiles: [def], activeProfileId: def.id };
       }
       return {
         ...prev,
-        profiles: remainingProfiles,
-        activeProfileId: prev.activeProfileId === profileId 
-          ? remainingProfiles[0].id 
-          : prev.activeProfileId,
+        profiles: remaining,
+        activeProfileId: prev.activeProfileId === profileId ? remaining[0].id : prev.activeProfileId,
       };
     });
   }, []);
 
   const renameProfile = useCallback((profileId: string, newName: string) => {
-    setData(prev => ({
-      ...prev,
-      profiles: prev.profiles.map(p =>
-        p.id === profileId ? { ...p, name: newName } : p
-      ),
-    }));
+    setData((prev) =>
+      prev
+        ? {
+            ...prev,
+            profiles: prev.profiles.map((p) => (p.id === profileId ? { ...p, name: newName } : p)),
+          }
+        : prev
+    );
   }, []);
 
   const switchProfile = useCallback((profileId: string) => {
-    setData(prev => ({
-      ...prev,
-      activeProfileId: profileId,
-    }));
+    setData((prev) => (prev ? { ...prev, activeProfileId: profileId } : prev));
   }, []);
 
-  // Exercise operations
-  const addExercise = useCallback((exercise: Omit<Exercise, 'id' | 'isCustom'>) => {
-    const newExercise: Exercise = {
-      ...exercise,
-      id: generateId(),
-      isCustom: true,
-    };
-
-    setData(prev => ({
-      ...prev,
-      profiles: prev.profiles.map(p =>
-        p.id === prev.activeProfileId
-          ? { ...p, exercises: [...p.exercises, newExercise] }
-          : p
-      ),
-    }));
-
+  // ---- Exercise operations ----
+  const addExercise = useCallback((exercise: Omit<Exercise, "id" | "isCustom">) => {
+    const newExercise: Exercise = { ...exercise, id: generateId(), isCustom: true };
+    setData((prev) =>
+      prev
+        ? {
+            ...prev,
+            profiles: prev.profiles.map((p) =>
+              p.id === prev.activeProfileId ? { ...p, exercises: [...p.exercises, newExercise] } : p
+            ),
+          }
+        : prev
+    );
     return newExercise;
   }, []);
 
   const updateExercise = useCallback((exerciseId: string, updates: Partial<Exercise>) => {
-    setData(prev => ({
-      ...prev,
-      profiles: prev.profiles.map(p =>
-        p.id === prev.activeProfileId
-          ? {
-              ...p,
-              exercises: p.exercises.map(e =>
-                e.id === exerciseId ? { ...e, ...updates } : e
-              ),
-            }
-          : p
-      ),
-    }));
+    setData((prev) =>
+      prev
+        ? {
+            ...prev,
+            profiles: prev.profiles.map((p) =>
+              p.id === prev.activeProfileId
+                ? { ...p, exercises: p.exercises.map((e) => (e.id === exerciseId ? { ...e, ...updates } : e)) }
+                : p
+            ),
+          }
+        : prev
+    );
   }, []);
 
   const deleteExercise = useCallback((exerciseId: string) => {
-    setData(prev => ({
-      ...prev,
-      profiles: prev.profiles.map(p =>
-        p.id === prev.activeProfileId
-          ? { ...p, exercises: p.exercises.filter(e => e.id !== exerciseId) }
-          : p
-      ),
-    }));
+    setData((prev) =>
+      prev
+        ? {
+            ...prev,
+            profiles: prev.profiles.map((p) =>
+              p.id === prev.activeProfileId ? { ...p, exercises: p.exercises.filter((e) => e.id !== exerciseId) } : p
+            ),
+          }
+        : prev
+    );
   }, []);
 
-  // Template operations
-  const createTemplate = useCallback((template: Omit<WorkoutTemplate, 'id' | 'createdAt' | 'updatedAt'>) => {
+  // ---- Template operations ----
+  const createTemplate = useCallback((template: Omit<WorkoutTemplate, "id" | "createdAt" | "updatedAt">) => {
     const now = new Date().toISOString();
-    const newTemplate: WorkoutTemplate = {
-      ...template,
-      id: generateId(),
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    setData(prev => ({
-      ...prev,
-      profiles: prev.profiles.map(p =>
-        p.id === prev.activeProfileId
-          ? { ...p, templates: [...p.templates, newTemplate] }
-          : p
-      ),
-    }));
-
+    const newTemplate: WorkoutTemplate = { ...template, id: generateId(), createdAt: now, updatedAt: now };
+    setData((prev) =>
+      prev
+        ? {
+            ...prev,
+            profiles: prev.profiles.map((p) =>
+              p.id === prev.activeProfileId ? { ...p, templates: [...p.templates, newTemplate] } : p
+            ),
+          }
+        : prev
+    );
     return newTemplate;
   }, []);
 
   const updateTemplate = useCallback((templateId: string, updates: Partial<WorkoutTemplate>) => {
-    setData(prev => ({
-      ...prev,
-      profiles: prev.profiles.map(p =>
-        p.id === prev.activeProfileId
-          ? {
-              ...p,
-              templates: p.templates.map(t =>
-                t.id === templateId 
-                  ? { ...t, ...updates, updatedAt: new Date().toISOString() } 
-                  : t
-              ),
-            }
-          : p
-      ),
-    }));
+    setData((prev) =>
+      prev
+        ? {
+            ...prev,
+            profiles: prev.profiles.map((p) =>
+              p.id === prev.activeProfileId
+                ? {
+                    ...p,
+                    templates: p.templates.map((t) =>
+                      t.id === templateId ? { ...t, ...updates, updatedAt: new Date().toISOString() } : t
+                    ),
+                  }
+                : p
+            ),
+          }
+        : prev
+    );
   }, []);
 
   const deleteTemplate = useCallback((templateId: string) => {
-    setData(prev => ({
-      ...prev,
-      profiles: prev.profiles.map(p =>
-        p.id === prev.activeProfileId
-          ? { ...p, templates: p.templates.filter(t => t.id !== templateId) }
-          : p
-      ),
-    }));
+    setData((prev) =>
+      prev
+        ? {
+            ...prev,
+            profiles: prev.profiles.map((p) =>
+              p.id === prev.activeProfileId ? { ...p, templates: p.templates.filter((t) => t.id !== templateId) } : p
+            ),
+          }
+        : prev
+    );
   }, []);
 
-  // Session operations
-  const saveSession = useCallback((session: Omit<WorkoutSession, 'id' | 'profileId'>) => {
-    const newSession: WorkoutSession = {
-      ...session,
-      id: generateId(),
-      profileId: data.activeProfileId || '',
-    };
-
-    setData(prev => ({
-      ...prev,
-      profiles: prev.profiles.map(p =>
-        p.id === prev.activeProfileId
-          ? { ...p, sessions: [newSession, ...p.sessions] }
-          : p
-      ),
-    }));
-
-    return newSession;
-  }, [data.activeProfileId]);
+  // ---- Session operations ----
+  const saveSession = useCallback(
+    (session: Omit<WorkoutSession, "id" | "profileId">) => {
+      const newSession: WorkoutSession = {
+        ...session,
+        id: generateId(),
+        profileId: data?.activeProfileId || "",
+      };
+      setData((prev) =>
+        prev
+          ? {
+              ...prev,
+              profiles: prev.profiles.map((p) =>
+                p.id === prev.activeProfileId ? { ...p, sessions: [newSession, ...p.sessions] } : p
+              ),
+            }
+          : prev
+      );
+      return newSession;
+    },
+    [data?.activeProfileId]
+  );
 
   const deleteSession = useCallback((sessionId: string) => {
-    setData(prev => ({
-      ...prev,
-      profiles: prev.profiles.map(p =>
-        p.id === prev.activeProfileId
-          ? { ...p, sessions: p.sessions.filter(s => s.id !== sessionId) }
-          : p
-      ),
-    }));
+    setData((prev) =>
+      prev
+        ? {
+            ...prev,
+            profiles: prev.profiles.map((p) =>
+              p.id === prev.activeProfileId ? { ...p, sessions: p.sessions.filter((s) => s.id !== sessionId) } : p
+            ),
+          }
+        : prev
+    );
   }, []);
 
-  // Stats helper
-  const getLastExerciseStats = useCallback((exerciseId: string) => {
-    if (!activeProfile) return null;
-
-    for (const session of activeProfile.sessions) {
-      const exerciseLog = session.exercises.find(e => e.exerciseId === exerciseId);
-      if (exerciseLog && exerciseLog.sets.some(s => s.completed)) {
-        return {
-          date: session.date,
-          sets: exerciseLog.sets.filter(s => s.completed),
-        };
+  // ---- Stats helpers ----
+  const getLastExerciseStats = useCallback(
+    (exerciseId: string) => {
+      if (!activeProfile) return null;
+      for (const session of activeProfile.sessions) {
+        const log = session.exercises.find((e) => e.exerciseId === exerciseId);
+        if (log && log.sets.some((s) => s.completed)) {
+          return { date: session.date, sets: log.sets.filter((s) => s.completed) };
+        }
       }
-    }
-    return null;
-  }, [activeProfile]);
+      return null;
+    },
+    [activeProfile]
+  );
 
-  const getExerciseHistory = useCallback((exerciseId: string) => {
-    if (!activeProfile) return [];
-
-    return activeProfile.sessions
-      .filter(session => session.exercises.some(e => e.exerciseId === exerciseId))
-      .map(session => ({
-        date: session.date,
-        exerciseLog: session.exercises.find(e => e.exerciseId === exerciseId)!,
-      }))
-      .filter(entry => entry.exerciseLog.sets.some(s => s.completed));
-  }, [activeProfile]);
+  const getExerciseHistory = useCallback(
+    (exerciseId: string) => {
+      if (!activeProfile) return [];
+      return activeProfile.sessions
+        .filter((s) => s.exercises.some((e) => e.exerciseId === exerciseId))
+        .map((s) => ({ date: s.date, exerciseLog: s.exercises.find((e) => e.exerciseId === exerciseId)! }))
+        .filter((entry) => entry.exerciseLog.sets.some((s) => s.completed));
+    },
+    [activeProfile]
+  );
 
   return {
     data,
-    profiles: data.profiles,
+    loading,
+    profiles: data?.profiles ?? [],
     activeProfile,
-    
-    // Profile operations
+
+    // Profile ops
     createProfile,
     deleteProfile,
     renameProfile,
     switchProfile,
 
-    // Exercise operations
+    // Exercise ops
     addExercise,
     updateExercise,
     deleteExercise,
 
-    // Template operations
+    // Template ops
     createTemplate,
     updateTemplate,
     deleteTemplate,
 
-    // Session operations
+    // Session ops
     saveSession,
     deleteSession,
 
