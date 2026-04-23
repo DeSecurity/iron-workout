@@ -12,7 +12,7 @@ export function useTimer({ onComplete }: UseTimerProps = {}) {
     totalSeconds: 0,
   });
 
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const audioRef = useRef<AudioContext | null>(null);
 
   const playBeep = useCallback(() => {
