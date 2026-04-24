@@ -1,13 +1,29 @@
-import React from 'react';
+import React, { useRef, useState } from 'react';
 import { Profile } from '@/types/workout';
-import { User, Calendar, Dumbbell, ClipboardList, History, Award } from 'lucide-react';
+import { User, Calendar, Dumbbell, ClipboardList, History, Award, Download, Upload } from 'lucide-react';
 import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 interface ProfileViewProps {
   profile: Profile;
+  onExport?: () => void;
+  onImport?: (file: File, mode: 'replace' | 'merge') => void | Promise<void>;
 }
 
-export function ProfileView({ profile }: ProfileViewProps) {
+export function ProfileView({ profile, onExport, onImport }: ProfileViewProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+
   const totalWorkouts = profile.sessions.length;
   const totalSets = profile.sessions.reduce((acc, session) => 
     acc + session.exercises.reduce((exAcc, ex) => exAcc + ex.sets.length, 0), 0
