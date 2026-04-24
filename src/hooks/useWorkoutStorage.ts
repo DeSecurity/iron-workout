@@ -285,6 +285,51 @@ export function useWorkoutStorage() {
     );
   }, []);
 
+  // ---- Import / Export ----
+  const exportData = useCallback(() => {
+    if (!data) return;
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      app: "Iron-Workout",
+      version: CURRENT_VERSION,
+      data,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `iron-workout-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [data]);
+
+  const importData = useCallback(async (file: File, mode: "replace" | "merge" = "replace") => {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    // Accept either the wrapped payload or raw WorkoutTrackerData
+    const incoming: WorkoutTrackerData = parsed?.data?.profiles ? parsed.data : parsed;
+    if (!incoming || !Array.isArray(incoming.profiles) || incoming.profiles.length === 0) {
+      throw new Error("Invalid backup file: no profiles found");
+    }
+    setData((prev) => {
+      if (mode === "replace" || !prev) {
+        return {
+          profiles: incoming.profiles,
+          activeProfileId: incoming.activeProfileId || incoming.profiles[0].id,
+          version: CURRENT_VERSION,
+        };
+      }
+      // merge: append profiles with new ids to avoid collisions
+      const existingIds = new Set(prev.profiles.map((p) => p.id));
+      const merged = incoming.profiles.map((p) =>
+        existingIds.has(p.id) ? { ...p, id: generateId(), name: `${p.name} (imported)` } : p
+      );
+      return { ...prev, profiles: [...prev.profiles, ...merged] };
+    });
+  }, []);
+
   // ---- Stats helpers ----
   const getLastExerciseStats = useCallback(
     (exerciseId: string) => {
